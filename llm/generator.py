@@ -9,7 +9,8 @@ from llm.claude_client import get_client
 logger = logging.getLogger("generator")
 
 # Umbral: archivos más grandes se procesan por sección
-LARGE_FILE_THRESHOLD = 3500
+# Con qwen2.5-coder:7b en GPU (8192 tokens ctx) podemos manejar ~12000 chars completos
+LARGE_FILE_THRESHOLD = 12000
 
 SYSTEM_ROLE = (
     "You are a code editor. Return ONLY a JSON array. No explanation, no markdown.\n"
@@ -191,6 +192,16 @@ class CodeGenerator:
         service = kwargs.get('service', '')
         paths_list = list(files.keys())
 
+        # Truncar archivos muy grandes antes de extraer sección
+        # Con 8192 tokens de contexto: ~32K chars totales (input+output)
+        # Reservamos ~14K para output → max 18K chars de input
+        MAX_INPUT_CHARS = 14000
+
+        files = {
+            path: (content[:MAX_INPUT_CHARS] + "\n// [TRUNCADO]" if len(content) > MAX_INPUT_CHARS else content)
+            for path, content in files.items()
+        }
+
         # Extraer secciones relevantes y determinar estrategia de prompt
         section_meta: Dict[str, Tuple[str, Optional[int], Optional[int]]] = {}
         uses_section = False
@@ -221,7 +232,7 @@ class CodeGenerator:
             f'Return ONLY the JSON array.'
         )
 
-        raw_output = self.claude.complete(batch_prompt, system=SYSTEM_ROLE, max_tokens=2048)
+        raw_output = self.claude.complete(batch_prompt, system=SYSTEM_ROLE, max_tokens=4096)
 
         if not raw_output.strip():
             logger.error(f'[LLM] Respuesta vacía para {service}')
