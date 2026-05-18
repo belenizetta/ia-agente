@@ -192,47 +192,94 @@ class CodeGenerator:
         service = kwargs.get('service', '')
         paths_list = list(files.keys())
 
-        # Truncar archivos muy grandes antes de extraer sección
-        # Con 8192 tokens de contexto: ~32K chars totales (input+output)
-        # Reservamos ~14K para output → max 18K chars de input
-        MAX_INPUT_CHARS = 14000
+        # Guardar contenido original antes de cualquier truncación (para patchear después)
+        original_files: Dict[str, str] = dict(files)
 
-        files = {
-            path: (content[:MAX_INPUT_CHARS] + "\n// [TRUNCADO]" if len(content) > MAX_INPUT_CHARS else content)
+        # Truncar solo para análisis de sección (la extracción usa el contenido truncado
+        # pero el patch final usa el original completo)
+        MAX_INPUT_CHARS = 16000
+        files_for_section = {
+            path: (content[:MAX_INPUT_CHARS] if len(content) > MAX_INPUT_CHARS else content)
             for path, content in files.items()
         }
 
-        # Extraer secciones relevantes y determinar estrategia de prompt
+        # Extraer secciones relevantes
         section_meta: Dict[str, Tuple[str, Optional[int], Optional[int]]] = {}
         uses_section = False
 
-        for path, content in files.items():
+        for path, content in files_for_section.items():
             focused, sec_start, sec_end = self._extract_section(content, prompt)
-            section_meta[path] = (content, sec_start, sec_end)
+            section_meta[path] = (focused, sec_start, sec_end)
             if sec_start is not None:
                 uses_section = True
 
         steps_text = '; '.join(steps[:3]) if steps else ''
 
         # ----------------------------------------------------------------
-        # Estrategia única: JSON batch (funciona para archivos pequeños y grandes)
-        # Con modelos capaces (32B+) el JSON es confiable.
-        # Para secciones extraídas se parchea después.
+        # Estrategia A: archivo grande con sección identificada
+        # → el modelo recibe SOLO la sección y devuelve SOLO la sección corregida
+        # → se parchea de vuelta en el archivo original completo
         # ----------------------------------------------------------------
+        if uses_section and len(files) == 1:
+            path = paths_list[0]
+            focused, sec_start, sec_end = section_meta[path]
+            original_full = original_files[path]
+
+            section_system = (
+                "You are a precise code editor. "
+                "Return ONLY a JSON array with ONE element. "
+                "The 'content' field must contain ONLY the fixed method/section shown — "
+                "NOT the entire file. No duplicate methods. No extra code.\n"
+                'Format: [{"path": "path/to/File.java", "content": "fixed method here"}]'
+            )
+
+            section_prompt = (
+                f"TASK: {prompt}\n\n"
+                f"Fix ONLY the following code section from {path}:\n"
+                f"```java\n{focused}\n```\n\n"
+                f"Return a JSON array with the corrected section. "
+                f"Do NOT return the full file — only the fixed method/section."
+            )
+
+            raw_output = self.claude.complete(section_prompt, system=section_system, max_tokens=2048)
+            logger.info(f'[LLM-SECTION] Response (primeros 400 chars): {raw_output[:400]}')
+
+            parsed = self._parse(raw_output, paths=[path])
+            if not parsed:
+                logger.warning(f'[LLM-SECTION] Sin cambios parseables.\n{raw_output}')
+                return []
+
+            fixed_section = parsed[0].content
+            # Pegar la sección corregida en el archivo ORIGINAL completo
+            full_fixed = self._patch_section(original_full, fixed_section, sec_start, sec_end)
+            change = FileChange(path=path, content=full_fixed, mode='update')
+
+            if self._validate_change(change, original_full, path, intent):
+                return [change]
+            return []
+
+        # ----------------------------------------------------------------
+        # Estrategia B: archivo(s) pequeño(s) → devolver archivo completo
+        # ----------------------------------------------------------------
+        SYSTEM_ROLE_FULL = (
+            "You are a code editor. Return ONLY a JSON array. No explanation, no markdown.\n"
+            'Format: [{"path": "path/to/File.java", "content": "COMPLETE file here"}]\n'
+            "Return the FULL file content. If no changes needed, return []."
+        )
+
         files_section = ''
         for path, content in files.items():
-            focused, sec_start, _ = section_meta[path]
-            files_section += f'\nFILE: {path}\n```\n{focused}\n```\n'
+            files_section += f'\nFILE: {path}\n```\n{content}\n```\n'
 
         batch_prompt = (
             f'{UNIVERSAL_RULES}\n'
             f'TASK: {prompt}\n'
             + (f'Steps: {steps_text}\n' if steps_text else '')
             + f'\nFiles:\n{files_section}\n'
-            f'Return ONLY the JSON array.'
+            f'Return ONLY the JSON array with the complete modified files.'
         )
 
-        raw_output = self.claude.complete(batch_prompt, system=SYSTEM_ROLE, max_tokens=4096)
+        raw_output = self.claude.complete(batch_prompt, system=SYSTEM_ROLE_FULL, max_tokens=4096)
 
         if not raw_output.strip():
             logger.error(f'[LLM] Respuesta vacía para {service}')
@@ -261,15 +308,11 @@ class CodeGenerator:
                 original_path = corrected
 
             lookup_path = original_path or change.path
-            original_content, sec_start, sec_end = section_meta.get(lookup_path, ('', None, None))
+            original_content = original_files.get(lookup_path, '')
 
             if not original_content:
                 all_changes.append(change)
                 continue
-
-            if sec_start is not None:
-                patched = self._patch_section(original_content, change.content, sec_start, sec_end)
-                change = FileChange(path=change.path, content=patched, mode=change.mode)
 
             if self._validate_change(change, original_content, lookup_path, intent):
                 all_changes.append(change)
