@@ -16,6 +16,9 @@ import requests
 SEPARATOR = "-" * 60
 SECTION = "=" * 60
 
+# ngrok free tier bloquea requests sin este header (muestra página de advertencia)
+NGROK_HEADERS = {"ngrok-skip-browser-warning": "true"}
+
 
 def print_header(text: str):
     print(f"\n{SECTION}")
@@ -84,7 +87,7 @@ def poll_until_done(server: str, job_id: str, target_status: str = "pending_appr
 
     while elapsed < TIMEOUT_SECONDS:
         try:
-            resp = requests.get(f"{server}/jobs/{job_id}/status", timeout=10)
+            resp = requests.get(f"{server}/jobs/{job_id}/status", timeout=10, headers=NGROK_HEADERS)
 
             if resp.status_code == 404:
                 print(f"\r  Esperando que inicie el job...", end="", flush=True)
@@ -138,7 +141,7 @@ def poll_until_done(server: str, job_id: str, target_status: str = "pending_appr
 
 def display_plan(server: str, job_id: str):
     try:
-        resp = requests.get(f"{server}/jobs/{job_id}/plan", timeout=10)
+        resp = requests.get(f"{server}/jobs/{job_id}/plan", timeout=10, headers=NGROK_HEADERS)
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
@@ -216,7 +219,7 @@ def main():
 
     # Verificar conexion
     try:
-        requests.get(f"{server}/docs", timeout=5)
+        requests.get(f"{server}/docs", timeout=15, headers=NGROK_HEADERS)
     except Exception:
         print(f"\n  ERROR: No se puede conectar al servidor en {server}")
         print(f"  Asegurate de que el servidor este corriendo:")
@@ -260,7 +263,7 @@ def main():
     }
 
     try:
-        resp = requests.post(f"{server}/process", json=payload, timeout=30)
+        resp = requests.post(f"{server}/process", json=payload, timeout=30, headers=NGROK_HEADERS)
         resp.raise_for_status()
         job_data = resp.json()
     except Exception as e:
@@ -297,6 +300,7 @@ def main():
             f"{server}/confirm",
             json={"job_id": job_id, "approved": approved},
             timeout=30,
+            headers=NGROK_HEADERS,
         )
         resp.raise_for_status()
     except Exception as e:
