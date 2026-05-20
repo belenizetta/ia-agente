@@ -1,5 +1,6 @@
 from fastapi import FastAPI, BackgroundTasks, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.orchestrator import Orchestrator
 from typing import Dict, Any, Optional
@@ -20,6 +21,14 @@ logger = logging.getLogger("main")
 
 app = FastAPI(title="AI Code Orchestrator")
 orchestrator = Orchestrator()
+
+_static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(_static_dir):
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
+@app.get("/")
+def index():
+    return FileResponse(os.path.join(_static_dir, "index.html"))
 
 
 class ProcessRequest(BaseModel):
@@ -226,6 +235,22 @@ def get_status(job_id: str):
         "status": status,
         "latest_event": last.get("event"),
         "all_events": events,
+    }
+
+
+# ------------------------------------------------------------------
+# GET /jobs/{job_id}/preview — diff del código generado (para mostrar antes de aprobar)
+# ------------------------------------------------------------------
+
+@app.get("/jobs/{job_id}/preview")
+def get_preview(job_id: str):
+    state = orchestrator.load_job_state(job_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Job no encontrado.")
+    return {
+        "job_id": job_id,
+        "summary": state.get("plan", {}).get("summary", ""),
+        "diffs": state.get("diffs_preview", []),
     }
 
 

@@ -1,8 +1,9 @@
 fastapi
-uvicorn
+uvicorn[standard]
 python-dotenv
 pydantic
 openai
 gitpython
 PyGithub
 requests
+aiofiles

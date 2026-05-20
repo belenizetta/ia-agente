@@ -315,6 +315,102 @@ class Orchestrator:
         global_context = self._build_global_context(plan, local_paths)
         audit.record("global_context_mapped", {"files_count": len(global_context)})
 
+        # ------------------------------------------------------------------
+        # 7) Generar código con LLM (siempre, para mostrar diff antes de aprobar)
+        # ------------------------------------------------------------------
+        import re as _re2
+        import difflib
+
+        CODE_EXTENSIONS = {
+            ".java", ".py", ".ts", ".js", ".go", ".cs", ".kt", ".rb",
+            ".php", ".rs", ".cpp", ".c", ".h", ".scala", ".swift",
+        }
+
+        class_names_in_prompt = list(dict.fromkeys(
+            _re2.findall(r'\b([A-Z][a-zA-Z0-9]+)\b', prompt)
+        ))
+
+        generated_changes_map: Dict[str, list] = {}
+        diffs_preview: list = []
+
+        for task in plan.get("tasks", []):
+            svc = task["service"]
+            action = task["action"]
+            files_in_task = task.get("files", [])
+            steps = task.get("steps", [])
+
+            if action == "analyze_code":
+                continue
+
+            repo_path = local_paths.get(svc)
+            if not repo_path:
+                continue
+
+            direct_matches = self._find_files_in_repo(repo_path, class_names_in_prompt, CODE_EXTENSIONS)
+            existing_code_files = direct_matches or [
+                fp for fp in files_in_task
+                if os.path.splitext(fp)[1].lower() in CODE_EXTENSIONS
+                and os.path.exists(os.path.join(repo_path, fp))
+            ]
+
+            selected_files = self._select_files_for_task(
+                task_description=f"{action}: {prompt}",
+                candidate_files=existing_code_files,
+                service=svc,
+            )
+            audit.record("files_selected", {"service": svc, "files": selected_files})
+
+            batch_files: Dict[str, str] = {}
+            for fp in selected_files:
+                abs_path = os.path.join(repo_path, fp)
+                try:
+                    with open(abs_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    if content.strip():
+                        batch_files[fp] = content
+                except Exception:
+                    pass
+
+            if not batch_files:
+                continue
+
+            changes = self.generator.generate(
+                repo_dir=repo_path,
+                intent=action,
+                files=batch_files,
+                prompt=prompt,
+                context={
+                    "frameworks": project_info.get("frameworks", []),
+                    "languages": project_info.get("languages", []),
+                    "plan_steps": steps,
+                },
+                global_context=global_context,
+                service=svc,
+            )
+
+            if changes:
+                generated_changes_map[svc] = [
+                    {"path": c.path, "content": c.content, "mode": c.mode}
+                    for c in changes
+                ]
+                for change in changes:
+                    original = batch_files.get(change.path, "")
+                    diff_lines = list(difflib.unified_diff(
+                        original.splitlines(),
+                        change.content.splitlines(),
+                        fromfile=f"a/{change.path}",
+                        tofile=f"b/{change.path}",
+                        n=4,
+                        lineterm="",
+                    ))
+                    diffs_preview.append({
+                        "service": svc,
+                        "path": change.path,
+                        "diff_lines": diff_lines,
+                    })
+
+        audit.record("generated_preview", {"diffs_count": len(diffs_preview)})
+
         if dry_run:
             state = {
                 "job_id": job_id,
@@ -325,6 +421,8 @@ class Orchestrator:
                 "tokens": tokens or {},
                 "base_branch": base_branch,
                 "project_info": project_info,
+                "generated_changes": generated_changes_map,
+                "diffs_preview": diffs_preview,
             }
             self._save_job_state(job_id, state)
 
@@ -358,6 +456,10 @@ class Orchestrator:
 
         if global_context is None:
             global_context = self._build_global_context(plan, local_paths)
+
+        # Cargar cambios pre-generados del estado del job (generados en process())
+        saved_state = self.load_job_state(job_id) or {}
+        pregenerated: Dict[str, list] = saved_state.get("generated_changes", {})
 
         prompt = plan.get("prompt_origin", "")
         accumulated_changes: Dict[str, str] = {}
@@ -419,78 +521,67 @@ class Orchestrator:
                 continue
 
             # ------------------------------------------------------------------
-            # 1) Buscar directamente en el repo los archivos con nombres de clase
-            #    mencionados en el prompt (EventListener.java, etc.)
+            # Usar cambios pre-generados (del process()) o generar ahora como fallback
             # ------------------------------------------------------------------
-            CODE_EXTENSIONS = {
-                ".java", ".py", ".ts", ".js", ".go", ".cs", ".kt", ".rb",
-                ".php", ".rs", ".cpp", ".c", ".h", ".scala", ".swift",
-                ".html", ".css", ".scss", ".xml", ".yaml", ".yml",
-                ".json", ".properties", ".gradle", ".toml", ".sql",
-            }
+            from core.models import FileChange as _FileChange
+            svc_pregenerated = pregenerated.get(svc)
 
-            import re as _re
-            class_names_in_prompt = list(dict.fromkeys(
-                _re.findall(r'\b([A-Z][a-zA-Z0-9]+)\b', prompt)
-            ))
-
-            # Buscar en el repo físico (más confiable que las listas del planner)
-            direct_matches = self._find_files_in_repo(repo_path, class_names_in_prompt, CODE_EXTENSIONS)
-
-            if direct_matches:
-                logger.info(f"[REPO SEARCH] {svc}: encontrados {direct_matches}")
-                existing_code_files = direct_matches
+            if svc_pregenerated:
+                all_service_changes = [
+                    _FileChange(path=c["path"], content=c["content"], mode=c.get("mode", "update"))
+                    for c in svc_pregenerated
+                ]
+                logger.info(f"[EXECUTE] {svc}: usando {len(all_service_changes)} cambios pre-generados")
             else:
-                # Fallback: usar la lista del planner
-                existing_code_files = [
+                # Fallback: llamar al LLM si no hay cambios pre-generados
+                import re as _re
+                CODE_EXTENSIONS = {
+                    ".java", ".py", ".ts", ".js", ".go", ".cs", ".kt", ".rb",
+                    ".php", ".rs", ".cpp", ".c", ".h", ".scala", ".swift",
+                }
+                class_names_in_prompt = list(dict.fromkeys(
+                    _re.findall(r'\b([A-Z][a-zA-Z0-9]+)\b', prompt)
+                ))
+                direct_matches = self._find_files_in_repo(repo_path, class_names_in_prompt, CODE_EXTENSIONS)
+                existing_code_files = direct_matches or [
                     fp for fp in files
                     if os.path.splitext(fp)[1].lower() in CODE_EXTENSIONS
                     and os.path.exists(os.path.join(repo_path, fp))
                 ]
+                selected_files = self._select_files_for_task(
+                    task_description=f"{action}: {prompt}",
+                    candidate_files=existing_code_files,
+                    service=svc,
+                )
+                batch_files: Dict[str, str] = {}
+                for fp in selected_files:
+                    abs_path = os.path.join(repo_path, fp)
+                    try:
+                        with open(abs_path, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        if content.strip():
+                            batch_files[fp] = content
+                    except Exception as e:
+                        audit.record("missing_file", {"file": fp, "error": str(e)})
 
-            # 2) Selección por keyword (sin LLM)
-            selected_files = self._select_files_for_task(
-                task_description=f"{action}: {prompt}",
-                candidate_files=existing_code_files,
-                service=svc,
-            )
-            audit.record("files_selected", {"service": svc, "files": selected_files})
+                if not batch_files:
+                    audit.record("task_end", {"service": svc, "status": "no_files"})
+                    results.append({"service": svc, "status": "no_files"})
+                    continue
 
-            # 3) Leer solo los archivos seleccionados
-            batch_files: Dict[str, str] = {}
-            for fp in selected_files:
-                abs_path = os.path.join(repo_path, fp)
-                try:
-                    with open(abs_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    if not content.strip():
-                        logger.info(f"Skipping empty: {fp}")
-                        continue
-                    batch_files[fp] = content
-                except Exception as e:
-                    audit.record("missing_file", {"file": fp, "error": str(e)})
-
-            if not batch_files:
-                audit.record("task_end", {"service": svc, "status": "no_files"})
-                results.append({"service": svc, "status": "no_files"})
-                continue
-
-            # ------------------------------------------------------------------
-            # UNA SOLA llamada al LLM con todos los archivos del task
-            # ------------------------------------------------------------------
-            all_service_changes = self.generator.generate(
-                repo_dir=repo_path,
-                intent=action,
-                files=batch_files,
-                prompt=prompt,
-                context={
-                    "frameworks": project_info.get("frameworks", []),
-                    "languages": project_info.get("languages", []),
-                    "plan_steps": steps,
-                },
-                global_context=global_context,
-                service=svc,
-            )
+                all_service_changes = self.generator.generate(
+                    repo_dir=repo_path,
+                    intent=action,
+                    files=batch_files,
+                    prompt=prompt,
+                    context={
+                        "frameworks": project_info.get("frameworks", []),
+                        "languages": project_info.get("languages", []),
+                        "plan_steps": steps,
+                    },
+                    global_context=global_context,
+                    service=svc,
+                )
 
             for ch in all_service_changes:
                 accumulated_changes[f"{svc}:{ch.path}"] = ch.content

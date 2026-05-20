@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Code Orchestrator</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app">
+
+    <!-- ── Sidebar ── -->
+    <aside class="sidebar">
+      <div class="logo">
+        <span class="logo-icon">⚡</span>
+        <span class="logo-text">AI Orchestrator</span>
+      </div>
+
+      <form id="mainForm" class="form" onsubmit="handleSubmit(event)">
+
+        <div class="field">
+          <label>¿Qué cambios querés hacer?</label>
+          <textarea id="prompt" rows="7"
+            placeholder="Ej: corregir bug en LoanServiceImpl.java en el método crearRefinanciacion() — el estado REFINANCED no se persiste en las cuotas"></textarea>
+        </div>
+
+        <div class="field">
+          <label>Repositorios</label>
+          <div id="reposList">
+            <div class="repo-entry">
+              <input class="input" placeholder="nombre (ej: backend)" data-field="name">
+              <input class="input" placeholder="URL del repo" data-field="url">
+              <input class="input" placeholder="Token (opcional)" data-field="token" type="password">
+            </div>
+          </div>
+          <button type="button" class="btn-link" onclick="addRepo()">+ Agregar repo</button>
+        </div>
+
+        <div class="field field-row">
+          <label>Rama base</label>
+          <input id="baseBranch" class="input input-sm" value="main">
+        </div>
+
+        <button type="submit" class="btn-primary" id="analyzeBtn">
+          <span id="analyzeBtnIcon">🔍</span>
+          <span id="analyzeBtnText">Analizar y planificar</span>
+        </button>
+
+      </form>
+    </aside>
+
+    <!-- ── Workspace ── -->
+    <main class="workspace" id="workspace">
+
+      <!-- Estado vacío -->
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">⚡</div>
+        <h2>AI Code Orchestrator</h2>
+        <p>Describí los cambios que querés hacer en tu repositorio.<br>
+          El sistema va a analizar el código, generar un plan y mostrarte exactamente qué va a cambiar antes de aplicarlo.</p>
+      </div>
+
+      <!-- Progreso de análisis -->
+      <div class="card hidden" id="logCard">
+        <div class="card-header">
+          <span id="logTitle">Analizando repositorio...</span>
+          <div class="spinner" id="logSpinner"></div>
+        </div>
+        <div class="log-entries" id="logEntries"></div>
+      </div>
+
+      <!-- Plan + diffs -->
+      <div class="hidden" id="planSection">
+        <div class="plan-header">
+          <h2>Plan de cambios</h2>
+          <p class="plan-summary" id="planSummary"></p>
+        </div>
+        <div id="diffsList"></div>
+        <div class="plan-actions">
+          <button class="btn-apply" id="applyBtn" onclick="applyChanges()">✅ Aplicar cambios</button>
+          <button class="btn-reject" onclick="rejectPlan()">❌ Rechazar</button>
+        </div>
+      </div>
+
+      <!-- Progreso de ejecución -->
+      <div class="card hidden" id="execCard">
+        <div class="card-header">
+          <span id="execTitle">Aplicando cambios...</span>
+          <div class="spinner" id="execSpinner"></div>
+        </div>
+        <div class="log-entries" id="execEntries"></div>
+      </div>
+
+      <!-- Resultado final -->
+      <div class="result-card hidden" id="resultCard">
+        <div class="result-header">✅ Cambios aplicados correctamente</div>
+        <div id="resultBody"></div>
+        <button class="btn-link" style="margin-top:16px" onclick="resetApp()">← Nueva tarea</button>
+      </div>
+
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
