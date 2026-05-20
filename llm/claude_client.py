@@ -103,10 +103,14 @@ class LLMClient:
             stream=True,
         )
         chunks = []
+        token_count = 0
         for chunk in stream:
             delta = chunk.choices[0].delta.content
             if delta:
                 chunks.append(delta)
+                token_count += 1
+                if token_count % 50 == 0:
+                    logger.info(f"[LLM-STREAM] Generando... {token_count} tokens")
         result = "".join(chunks)
-        logger.info(f"[LLM-STREAM] Recibidos {len(result)} chars")
+        logger.info(f"[LLM-STREAM] Completado: {token_count} tokens, {len(result)} chars")
         return result

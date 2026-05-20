@@ -73,7 +73,7 @@ EVENT_LABELS = {
 
 TERMINAL_STATUSES = {"pending_approval", "done", "ok", "error", "rejected"}
 
-TIMEOUT_SECONDS = 600  # 10 minutos máximo
+TIMEOUT_SECONDS = 1800  # 30 minutos máximo (LLM remoto puede ser lento)
 
 
 def poll_until_done(server: str, job_id: str, target_status: str = "pending_approval") -> dict:
