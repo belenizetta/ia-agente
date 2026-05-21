@@ -112,25 +112,61 @@ class CodeGenerator:
     # Parser de respuesta LLM
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _fix_json_control_chars(text: str) -> str:
+        """Escapa tabs y newlines literales dentro de strings JSON.
+        El LLM a veces genera JSON con código fuente indentado con tabs reales
+        en lugar de \\t y \\n, lo que rompe json.loads()."""
+        result = []
+        in_string = False
+        skip_next = False
+        for c in text:
+            if skip_next:
+                result.append(c)
+                skip_next = False
+            elif c == '\\' and in_string:
+                result.append(c)
+                skip_next = True
+            elif c == '"':
+                in_string = not in_string
+                result.append(c)
+            elif in_string:
+                if c == '\n':
+                    result.append('\\n')
+                elif c == '\r':
+                    result.append('\\r')
+                elif c == '\t':
+                    result.append('\\t')
+                else:
+                    result.append(c)
+            else:
+                result.append(c)
+        return ''.join(result)
+
     def _parse(self, text: str, paths: List[str] = None) -> List[FileChange]:
         changes = []
-        try:
-            clean = re.sub(r'^```(?:json)?\s*', '', text.strip(), flags=re.IGNORECASE)
-            clean = re.sub(r'\s*```$', '', clean)
-            match = re.search(r'\[.*\]', clean, re.DOTALL)
-            if match:
-                parsed = json.loads(match.group(0))
-                for item in parsed:
-                    if 'path' in item and 'content' in item:
-                        changes.append(FileChange(
-                            path=item['path'].strip(),
-                            content=item['content'].strip(),
-                            mode='update',
-                        ))
-                return changes
-        except Exception as e:
-            logger.warning(f"JSON parse failed: {e}")
+        clean = re.sub(r'^```(?:json)?\s*', '', text.strip(), flags=re.IGNORECASE)
+        clean = re.sub(r'\s*```$', '', clean)
+        match = re.search(r'\[.*\]', clean, re.DOTALL)
 
+        if match:
+            json_text = match.group(0)
+            # Intentar parsear directo, y si falla reparar los control chars
+            for attempt in (json_text, self._fix_json_control_chars(json_text)):
+                try:
+                    parsed = json.loads(attempt)
+                    for item in parsed:
+                        if 'path' in item and 'content' in item:
+                            changes.append(FileChange(
+                                path=item['path'].strip(),
+                                content=item['content'].strip(),
+                                mode='update',
+                            ))
+                    return changes
+                except Exception as e:
+                    logger.warning(f"JSON parse failed: {e}")
+
+        # Fallback: extraer bloque de código si solo hay un archivo
         if paths and len(paths) == 1:
             code_blocks = re.findall(r'```(?:\w+)?\s*(.*?)\s*```', text, re.DOTALL)
             if code_blocks:
