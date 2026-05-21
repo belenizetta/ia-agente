@@ -68,12 +68,14 @@ class Orchestrator:
 
     @staticmethod
     def _extract_path_hints(prompt: str) -> List[str]:
-        """Extrae rutas de archivo explícitas mencionadas en el prompt."""
+        """Extrae rutas de archivo explícitas mencionadas en el prompt.
+        Requiere al menos un separador de directorio para capturar el nombre
+        completo con extensiones compuestas (ej: pago-cuota-modal.component.ts)."""
         import re as _re
-        return _re.findall(
-            r'[\w\-/\\]+\.(?:java|ts|tsx|js|jsx|py|cs|go|rb|php|kt|scala|swift)',
+        return list(dict.fromkeys(_re.findall(
+            r'(?:[\w\-]+/)+[\w\-\.]+\.(?:java|ts|tsx|js|jsx|py|cs|go|rb|php|kt|scala|swift)',
             prompt
-        )
+        )))
 
     def _find_files_in_repo(self, repo_path: str, class_names: List[str],
                             extensions: set, prompt: str = "") -> List[str]:
@@ -154,25 +156,38 @@ class Orchestrator:
 
     def _select_files_for_task(self, task_description: str, candidate_files: List[str],
                                 service: str) -> List[str]:
-        """Selecciona archivos por nombre de clase extraído del texto — sin LLM."""
+        """Selecciona archivos por nombre de clase o nombre de archivo explícito."""
         import re as _re
-        # Extraer nombres de clases Java/Python del texto (PascalCase)
+
+        # 1) Match por nombre de clase PascalCase (Java/Python)
         class_names = list(dict.fromkeys(
             _re.findall(r'\b([A-Z][a-zA-Z0-9]+)\b', task_description)
         ))
 
+        # 2) Match por nombre de archivo exacto extraído de rutas en el texto
+        #    Cubre kebab-case Angular (pago-cuota-modal.component.ts)
+        hint_filenames = {
+            h.split("/")[-1].lower()
+            for h in self._extract_path_hints(task_description)
+        }
+
         selected = []
         for candidate in candidate_files:
-            basename = os.path.splitext(os.path.basename(candidate.replace("\\", "/")))[0].lower()
-            if any(cn.lower() == basename for cn in class_names):
+            cand_norm = candidate.replace("\\", "/")
+            full_filename = cand_norm.split("/")[-1].lower()
+            basename_no_ext = os.path.splitext(full_filename)[0]
+
+            if any(cn.lower() == basename_no_ext for cn in class_names):
+                selected.append(candidate)
+            elif full_filename in hint_filenames:
                 selected.append(candidate)
 
         if selected:
             logger.info(f"[FILE SELECTOR] {service}: seleccionados {selected}")
             return selected
 
-        # Fallback: devolver los primeros 3 candidatos
-        logger.info(f"[FILE SELECTOR] {service}: sin match exacto, usando primeros 3 de {len(candidate_files)} candidatos")
+        # Fallback: primeros 3 candidatos
+        logger.info(f"[FILE SELECTOR] {service}: sin match, usando primeros 3 de {len(candidate_files)}")
         return candidate_files[:3]
 
     def _save_job_state(self, job_id: str, state: Dict):
