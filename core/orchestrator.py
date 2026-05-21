@@ -66,61 +66,83 @@ class Orchestrator:
         os.makedirs(path, exist_ok=True)
         return path
 
+    @staticmethod
+    def _extract_path_hints(prompt: str) -> List[str]:
+        """Extrae rutas de archivo explícitas mencionadas en el prompt."""
+        import re as _re
+        return _re.findall(
+            r'[\w\-/\\]+\.(?:java|ts|tsx|js|jsx|py|cs|go|rb|php|kt|scala|swift)',
+            prompt
+        )
+
     def _find_files_in_repo(self, repo_path: str, class_names: List[str],
-                            extensions: set) -> List[str]:
+                            extensions: set, prompt: str = "") -> List[str]:
         """
-        Busca archivos en el repo por nombre de clase o por contenido.
-        Estrategia:
-          1) Match exacto por nombre de archivo (EventListener.java)
-          2) Nombre de clase contenido en el basename (CreditEventListener.java contiene EventListener)
-          3) Fallback: buscar declaración de clase dentro del archivo (class EventListener {)
+        Busca archivos en el repo. Estrategia (en orden de prioridad):
+          1) Ruta explícita mencionada en el prompt (pago-cuota-modal.component.ts)
+          2) Match por nombre de clase PascalCase (EventListener.java)
+          3) Fallback: declaración de clase dentro del archivo
         """
-        skip_dirs = {".git", "target", "build", "node_modules", "__pycache__", ".gradle"}
-        # Solo nombres significativos (>5 chars) para evitar falsos positivos
-        significant = [cn for cn in class_names if len(cn) > 5]
+        skip_dirs = {".git", "target", "build", "node_modules", "__pycache__", ".gradle", "dist", ".angular"}
+
+        # ── Estrategia 1: rutas explícitas del prompt ──────────────────────
+        path_hints = self._extract_path_hints(prompt) if prompt else []
+        explicit_matches = []
 
         by_ext: dict = {}
-        name_matches = []
+        all_rel: list = []
 
         for root, dirs, files in os.walk(repo_path):
             dirs[:] = [d for d in dirs if d not in skip_dirs]
             for f in files:
                 ext = os.path.splitext(f)[1].lower()
-                if ext not in extensions:
-                    continue
-                rel = os.path.relpath(os.path.join(root, f), repo_path)
-                by_ext.setdefault(ext, []).append(rel)
+                rel = os.path.relpath(os.path.join(root, f), repo_path).replace("\\", "/")
+                if ext in extensions:
+                    by_ext.setdefault(ext, []).append(rel)
+                    all_rel.append(rel)
 
-                basename_lower = os.path.splitext(f)[0].lower()
-                for cn in significant:
-                    cn_lower = cn.lower()
-                    # Solo: exacto O clase contenida en el nombre del archivo
-                    # NO al revés (evita "Loan" matchear "LoanEventListener")
-                    if cn_lower == basename_lower or cn_lower in basename_lower:
-                        if rel not in name_matches:
-                            name_matches.append(rel)
-                        break
+                    # Match por ruta explícita del prompt (sufijo o nombre de archivo)
+                    for hint in path_hints:
+                        hint_norm = hint.replace("\\", "/")
+                        if rel.endswith(hint_norm) or rel.endswith(hint_norm.split("/")[-1]):
+                            if rel not in explicit_matches:
+                                explicit_matches.append(rel)
 
-        # Log todos los .java para diagnóstico
+        if explicit_matches:
+            logger.info(f"[REPO SEARCH] match por ruta explícita: {explicit_matches}")
+            return explicit_matches
+
+        # ── Estrategia 2: match por nombre de clase PascalCase ─────────────
+        significant = [cn for cn in class_names if len(cn) > 5]
+        name_matches = []
+
+        for rel in all_rel:
+            basename_lower = os.path.splitext(rel.split("/")[-1])[0].lower()
+            for cn in significant:
+                cn_lower = cn.lower()
+                if cn_lower == basename_lower or cn_lower in basename_lower:
+                    if rel not in name_matches:
+                        name_matches.append(rel)
+                    break
+
         java_files = by_ext.get(".java", [])
-        logger.info(f"[REPO SCAN] .java ({len(java_files)} total): {[os.path.basename(p) for p in java_files]}")
+        logger.info(f"[REPO SCAN] .java ({len(java_files)} total): {[p.split('/')[-1] for p in java_files]}")
 
         if name_matches:
             logger.info(f"[REPO SEARCH] match por nombre: {name_matches}")
             return name_matches
 
-        # Fallback: buscar declaración de clase DENTRO del contenido del archivo
-        logger.info("[REPO SEARCH] Sin match por nombre. Buscando por contenido (class declaration)...")
+        # ── Estrategia 3: declaración de clase en contenido ────────────────
+        logger.info("[REPO SEARCH] Sin match por nombre. Buscando por contenido...")
         content_matches = []
         for rel in java_files:
             abs_path = os.path.join(repo_path, rel)
             try:
                 with open(abs_path, "r", encoding="utf-8", errors="ignore") as fh:
-                    head = fh.read(3000)  # Solo primeras 3000 chars
+                    head = fh.read(3000)
                 for cn in significant:
-                    # Busca "class EventListener" o "class EventListener " o "class EventListener{"
                     if f"class {cn}" in head:
-                        logger.info(f"[REPO SEARCH] match por contenido: {rel} (contiene 'class {cn}')")
+                        logger.info(f"[REPO SEARCH] match por contenido: {rel}")
                         if rel not in content_matches:
                             content_matches.append(rel)
                         break
@@ -346,7 +368,7 @@ class Orchestrator:
             if not repo_path:
                 continue
 
-            direct_matches = self._find_files_in_repo(repo_path, class_names_in_prompt, CODE_EXTENSIONS)
+            direct_matches = self._find_files_in_repo(repo_path, class_names_in_prompt, CODE_EXTENSIONS, prompt)
             existing_code_files = direct_matches or [
                 fp for fp in files_in_task
                 if os.path.splitext(fp)[1].lower() in CODE_EXTENSIONS
@@ -542,7 +564,7 @@ class Orchestrator:
                 class_names_in_prompt = list(dict.fromkeys(
                     _re.findall(r'\b([A-Z][a-zA-Z0-9]+)\b', prompt)
                 ))
-                direct_matches = self._find_files_in_repo(repo_path, class_names_in_prompt, CODE_EXTENSIONS)
+                direct_matches = self._find_files_in_repo(repo_path, class_names_in_prompt, CODE_EXTENSIONS, prompt)
                 existing_code_files = direct_matches or [
                     fp for fp in files
                     if os.path.splitext(fp)[1].lower() in CODE_EXTENSIONS

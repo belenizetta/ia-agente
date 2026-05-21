@@ -21,6 +21,10 @@ _FRONTEND_SIGNALS = {
 }
 
 
+_BACKEND_SVC_KEYS = ("backend", "back", "api", "server", "service", "core")
+_FRONTEND_SVC_KEYS = ("frontend", "front", "web", "ui", "client", "app")
+
+
 class SemanticRouter:
     def __init__(self):
         pass  # Sin LLM — routing por keywords
@@ -29,17 +33,21 @@ class SemanticRouter:
         prompt_lower = prompt.lower()
         all_services = list(project_manifest.keys())
 
-        # Separar servicios en categorías por su nombre
-        backend_svcs = [s for s in all_services if any(
-            k in s.lower() for k in ("backend", "api", "server", "service", "core")
-        )]
-        frontend_svcs = [s for s in all_services if any(
-            k in s.lower() for k in ("frontend", "web", "ui", "client", "app")
-        )]
+        # Separar servicios en categorías por su nombre (matching parcial)
+        backend_svcs = [s for s in all_services if any(k in s.lower() for k in _BACKEND_SVC_KEYS)]
+        frontend_svcs = [s for s in all_services if any(k in s.lower() for k in _FRONTEND_SVC_KEYS)]
         other_svcs = [s for s in all_services if s not in backend_svcs and s not in frontend_svcs]
 
         backend_score = sum(1 for kw in _BACKEND_SIGNALS if kw in prompt_lower)
         frontend_score = sum(1 for kw in _FRONTEND_SIGNALS if kw in prompt_lower)
+
+        # Bonus: si el prompt menciona explícitamente el nombre de un servicio
+        for svc in frontend_svcs:
+            if svc.lower() in prompt_lower:
+                frontend_score += 2
+        for svc in backend_svcs:
+            if svc.lower() in prompt_lower:
+                backend_score += 2
 
         print(f"[ROUTER] backend_score={backend_score}, frontend_score={frontend_score}")
 
@@ -55,6 +63,16 @@ class SemanticRouter:
             print(f"[ROUTER] → Solo frontend: {result}")
             return result
 
-        # Ambos tienen señales o ninguno: usar todos
+        # Ambos con señales: el que tenga mayor score
+        if frontend_score > backend_score:
+            result = frontend_svcs or other_svcs or all_services
+            print(f"[ROUTER] → Frontend (score mayor): {result}")
+            return result
+        if backend_score > frontend_score:
+            result = backend_svcs or other_svcs or all_services
+            print(f"[ROUTER] → Backend (score mayor): {result}")
+            return result
+
+        # Empate o sin señales: usar todos
         print(f"[ROUTER] → Todos los servicios: {all_services}")
         return all_services
