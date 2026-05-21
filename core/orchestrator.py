@@ -381,7 +381,25 @@ class Orchestrator:
 
             repo_path = local_paths.get(svc)
             if not repo_path:
-                continue
+                # El nombre del servicio en el plan no coincide con local_paths.
+                # Intentar detectar el repo correcto buscando el archivo del prompt.
+                path_hints = self._extract_path_hints(prompt)
+                for candidate_svc, candidate_path in local_paths.items():
+                    for hint in path_hints:
+                        hint_fname = hint.split("/")[-1].lower()
+                        for root, dirs, files_walk in os.walk(candidate_path):
+                            dirs[:] = [d for d in dirs if d not in {".git", "node_modules", "target", "build"}]
+                            if any(f.lower() == hint_fname for f in files_walk):
+                                logger.info(f"[PROCESS] Reasignando '{svc}' → '{candidate_svc}' (contiene {hint_fname})")
+                                svc = candidate_svc
+                                repo_path = candidate_path
+                                break
+                        if repo_path:
+                            break
+                    if repo_path:
+                        break
+                if not repo_path:
+                    continue
 
             direct_matches = self._find_files_in_repo(repo_path, class_names_in_prompt, CODE_EXTENSIONS, prompt)
             existing_code_files = direct_matches or [
@@ -504,7 +522,32 @@ class Orchestrator:
         job_branch_name = f"ai/update-{uuid.uuid4().hex[:8]}"
         claude = get_client()
 
-        for task in plan["tasks"]:
+        # ------------------------------------------------------------------
+        # Si hay cambios pre-generados, filtrar tasks para procesar SOLO los
+        # servicios que realmente tienen cambios. Evita modificar el repo
+        # equivocado cuando el planner asignó tasks a múltiples servicios.
+        # ------------------------------------------------------------------
+        tasks_to_run = plan["tasks"]
+        if pregenerated:
+            filtered = [t for t in plan["tasks"] if t["service"] in pregenerated]
+            if filtered:
+                tasks_to_run = filtered
+                logger.info(f"[EXECUTE] Limitando a servicios con cambios: {[t['service'] for t in filtered]}")
+            else:
+                # Los keys de pregenerated no coinciden con los tasks (nombres distintos).
+                # Reasignar el primer task al servicio con cambios.
+                first_svc = next(iter(pregenerated))
+                remapped = []
+                for t in plan["tasks"]:
+                    if t["service"] not in local_paths:
+                        continue
+                    remapped.append({**t, "service": first_svc})
+                    break
+                if remapped:
+                    tasks_to_run = remapped
+                    logger.info(f"[EXECUTE] Reasignando task a servicio con cambios: {first_svc}")
+
+        for task in tasks_to_run:
             svc = task["service"]
             action = task["action"]
             files = task["files"]
