@@ -143,6 +143,50 @@ class CodeGenerator:
                 result.append(c)
         return ''.join(result)
 
+    @staticmethod
+    def _extract_from_broken_json(text: str) -> List[Dict]:
+        """
+        Fallback para JSON con comillas sin escapar en valores 'content'.
+        Extrae pares path/content usando búsqueda regresiva: el cierre del
+        string content es la última '"' antes de '}' (objeto JSON) seguido
+        de ',' o ']' (siguiente elemento o fin del array).
+        Funciona bien para el caso de un solo archivo por llamada.
+        """
+        results = []
+        for path_m in re.finditer(r'"path"\s*:\s*"([^"]+)"', text):
+            path = path_m.group(1)
+            pos_after = path_m.end()
+
+            cm = re.search(r'"content"\s*:\s*"', text[pos_after:])
+            if not cm:
+                continue
+            abs_start = pos_after + cm.end()
+            remaining = text[abs_start:]
+
+            # Buscar de atrás hacia adelante: la última '"' seguida de '}'
+            # y ese '}' seguido de ',' o ']' (o fin de string)
+            end_pos = -1
+            for ri in range(len(remaining) - 1, -1, -1):
+                if remaining[ri] != '"':
+                    continue
+                j = ri + 1
+                while j < len(remaining) and remaining[j] in ' \t\r\n':
+                    j += 1
+                if j >= len(remaining) or remaining[j] != '}':
+                    continue
+                k = j + 1
+                while k < len(remaining) and remaining[k] in ' \t\r\n':
+                    k += 1
+                if k >= len(remaining) or remaining[k] in (',', ']'):
+                    end_pos = ri
+                    break
+
+            if end_pos > 0:
+                content = remaining[:end_pos]
+                results.append({'path': path, 'content': content})
+
+        return results
+
     def _parse(self, text: str, paths: List[str] = None) -> List[FileChange]:
         changes = []
         clean = re.sub(r'^```(?:json)?\s*', '', text.strip(), flags=re.IGNORECASE)
@@ -151,7 +195,7 @@ class CodeGenerator:
 
         if match:
             json_text = match.group(0)
-            # Intentar parsear directo, y si falla reparar los control chars
+            # Intento 1 y 2: parseo JSON directo, luego con control-chars reparados
             for attempt in (json_text, self._fix_json_control_chars(json_text)):
                 try:
                     parsed = json.loads(attempt)
@@ -166,7 +210,19 @@ class CodeGenerator:
                 except Exception as e:
                     logger.warning(f"JSON parse failed: {e}")
 
-        # Fallback: extraer bloque de código si solo hay un archivo
+            # Intento 3: extracción robusta con backward scan para comillas sin escapar
+            items = self._extract_from_broken_json(json_text)
+            if items:
+                logger.info(f"[PARSE] Backward-scan extrajo {len(items)} item(s)")
+                for item in items:
+                    changes.append(FileChange(
+                        path=item['path'].strip(),
+                        content=item['content'].strip(),
+                        mode='update',
+                    ))
+                return changes
+
+        # Fallback final: extraer bloque de código si solo hay un archivo
         if paths and len(paths) == 1:
             code_blocks = re.findall(r'```(?:\w+)?\s*(.*?)\s*```', text, re.DOTALL)
             if code_blocks:
