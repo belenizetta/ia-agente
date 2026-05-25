@@ -146,45 +146,49 @@ class CodeGenerator:
     @staticmethod
     def _extract_from_broken_json(text: str) -> List[Dict]:
         """
-        Fallback para JSON con comillas sin escapar en valores 'content'.
-        Extrae pares path/content usando búsqueda regresiva: el cierre del
-        string content es la última '"' antes de '}' (objeto JSON) seguido
-        de ',' o ']' (siguiente elemento o fin del array).
-        Funciona bien para el caso de un solo archivo por llamada.
+        Extrae path/content del JSON con comillas sin escapar en content.
+        Navega desde el FINAL del array JSON de forma determinista:
+        ] ← } ← \" — el '\"' antes del cierre del objeto es el cierre
+        del string content. Funciona para JSON de un solo item (caso habitual).
         """
         results = []
-        for path_m in re.finditer(r'"path"\s*:\s*"([^"]+)"', text):
-            path = path_m.group(1)
-            pos_after = path_m.end()
+        text_s = text.rstrip()
+        if not text_s or text_s[-1] != ']':
+            return results
 
-            cm = re.search(r'"content"\s*:\s*"', text[pos_after:])
-            if not cm:
-                continue
-            abs_start = pos_after + cm.end()
-            remaining = text[abs_start:]
+        pos = len(text_s) - 1  # en ']'
 
-            # Buscar de atrás hacia adelante: la última '"' seguida de '}'
-            # y ese '}' seguido de ',' o ']' (o fin de string)
-            end_pos = -1
-            for ri in range(len(remaining) - 1, -1, -1):
-                if remaining[ri] != '"':
-                    continue
-                j = ri + 1
-                while j < len(remaining) and remaining[j] in ' \t\r\n':
-                    j += 1
-                if j >= len(remaining) or remaining[j] != '}':
-                    continue
-                k = j + 1
-                while k < len(remaining) and remaining[k] in ' \t\r\n':
-                    k += 1
-                if k >= len(remaining) or remaining[k] in (',', ']'):
-                    end_pos = ri
-                    break
+        # ] ← saltar whitespace ← debe llegar a }
+        pos -= 1
+        while pos >= 0 and text_s[pos] in ' \t\r\n':
+            pos -= 1
+        if pos < 0 or text_s[pos] != '}':
+            return results
 
-            if end_pos > 0:
-                content = remaining[:end_pos]
-                results.append({'path': path, 'content': content})
+        # } ← saltar whitespace ← debe llegar a " (cierre del content)
+        pos -= 1
+        while pos >= 0 and text_s[pos] in ' \t\r\n':
+            pos -= 1
+        if pos < 0 or text_s[pos] != '"':
+            return results
 
+        content_end = pos  # posición del '"' de cierre del string content
+
+        # Buscar '"content": "' ANTES de content_end (primer match = el JSON real)
+        before_end = text_s[:content_end]
+        cm = re.search(r'"content"\s*:\s*"', before_end)
+        if not cm:
+            return results
+        content_start = cm.end()
+
+        raw_content = text_s[content_start:content_end]
+
+        # Buscar '"path": "..." ' antes del inicio del content
+        pm = re.search(r'"path"\s*:\s*"([^"]+)"', text_s[:content_start])
+        if not pm:
+            return results
+
+        results.append({'path': pm.group(1), 'content': raw_content})
         return results
 
     def _parse(self, text: str, paths: List[str] = None) -> List[FileChange]:
