@@ -28,7 +28,7 @@ _CHANGE_TYPE_RULES = [
 
 _JAVA_CLASS_RE = re.compile(
     r'\b([A-Z][a-zA-Z0-9]+(?:Service|Controller|Repository|Listener|Event|Handler|'
-    r'Config|Factory|Manager|Component|Entity|DTO|Dto|Mapper|Util|Helper))\b'
+    r'Config|Factory|Manager|Component|Entity|DTO|Dto|Mapper|Util|Helper|Impl))\b'
 )
 
 

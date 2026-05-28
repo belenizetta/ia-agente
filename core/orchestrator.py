@@ -432,19 +432,24 @@ class Orchestrator:
             if not batch_files:
                 continue
 
-            changes = self.generator.generate(
-                repo_dir=repo_path,
-                intent=action,
-                files=batch_files,
-                prompt=prompt,
-                context={
-                    "frameworks": project_info.get("frameworks", []),
-                    "languages": project_info.get("languages", []),
-                    "plan_steps": steps,
-                },
-                global_context=global_context,
-                service=svc,
-            )
+            # Un archivo por LLM call: evita timeout con prompts grandes (5+ archivos Java)
+            changes = []
+            gen_ctx = {
+                "frameworks": project_info.get("frameworks", []),
+                "languages": project_info.get("languages", []),
+                "plan_steps": steps,
+            }
+            for single_path, single_content in batch_files.items():
+                single_changes = self.generator.generate(
+                    repo_dir=repo_path,
+                    intent=action,
+                    files={single_path: single_content},
+                    prompt=prompt,
+                    context=gen_ctx,
+                    global_context=global_context,
+                    service=svc,
+                )
+                changes.extend(single_changes)
 
             if changes:
                 generated_changes_map[svc] = [
