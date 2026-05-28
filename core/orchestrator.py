@@ -73,7 +73,8 @@ class Orchestrator:
         completo con extensiones compuestas (ej: pago-cuota-modal.component.ts)."""
         import re as _re
         return list(dict.fromkeys(_re.findall(
-            r'(?:[\w\-]+/)+[\w\-\.]+\.(?:java|ts|tsx|js|jsx|py|cs|go|rb|php|kt|scala|swift)',
+            r'(?:[\w\-]+/)+[\w\-\.]+\.(?:java|ts|tsx|js|jsx|py|cs|go|rb|php|kt|scala|swift'
+            r'|yml|yaml|properties|xml|json|toml|env|sql|sh|md)',
             prompt
         )))
 
@@ -99,16 +100,17 @@ class Orchestrator:
             for f in files:
                 ext = os.path.splitext(f)[1].lower()
                 rel = os.path.relpath(os.path.join(root, f), repo_path).replace("\\", "/")
+
+                # Hint matching cubre CUALQUIER tipo de archivo (yml, xml, properties, etc.)
+                for hint in path_hints:
+                    hint_norm = hint.replace("\\", "/")
+                    if rel.endswith(hint_norm) or rel.endswith(hint_norm.split("/")[-1]):
+                        if rel not in explicit_matches:
+                            explicit_matches.append(rel)
+
                 if ext in extensions:
                     by_ext.setdefault(ext, []).append(rel)
                     all_rel.append(rel)
-
-                    # Match por ruta explícita del prompt (sufijo o nombre de archivo)
-                    for hint in path_hints:
-                        hint_norm = hint.replace("\\", "/")
-                        if rel.endswith(hint_norm) or rel.endswith(hint_norm.split("/")[-1]):
-                            if rel not in explicit_matches:
-                                explicit_matches.append(rel)
 
         if explicit_matches:
             logger.info(f"[REPO SEARCH] match por ruta explícita: {explicit_matches}")
@@ -361,6 +363,7 @@ class Orchestrator:
         CODE_EXTENSIONS = {
             ".java", ".py", ".ts", ".js", ".go", ".cs", ".kt", ".rb",
             ".php", ".rs", ".cpp", ".c", ".h", ".scala", ".swift",
+            ".yml", ".yaml", ".properties", ".xml", ".json", ".toml", ".sql",
         }
 
         class_names_in_prompt = list(dict.fromkeys(
