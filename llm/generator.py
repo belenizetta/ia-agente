@@ -144,6 +144,39 @@ class CodeGenerator:
         return ''.join(result)
 
     @staticmethod
+    def _unescape_json_content(s: str) -> str:
+        """Decodifica secuencias de escape JSON (\n, \t, \\, \", etc.) en el contenido
+        extraído sin json.loads. Sin esto, los saltos de línea quedan como 2 chars
+        literales \\+n y splitlines() devuelve 1 sola línea → falla integridad."""
+        result = []
+        i = 0
+        while i < len(s):
+            if s[i] == '\\' and i + 1 < len(s):
+                nxt = s[i + 1]
+                if nxt == 'n':
+                    result.append('\n'); i += 2
+                elif nxt == 'r':
+                    result.append('\r'); i += 2
+                elif nxt == 't':
+                    result.append('\t'); i += 2
+                elif nxt == '\\':
+                    result.append('\\'); i += 2
+                elif nxt == '"':
+                    result.append('"'); i += 2
+                elif nxt == '/':
+                    result.append('/'); i += 2
+                elif nxt == 'u' and i + 5 <= len(s):
+                    try:
+                        result.append(chr(int(s[i + 2:i + 6], 16))); i += 6
+                    except ValueError:
+                        result.append(s[i]); i += 1
+                else:
+                    result.append(s[i]); i += 1
+            else:
+                result.append(s[i]); i += 1
+        return ''.join(result)
+
+    @staticmethod
     def _extract_from_broken_json(text: str) -> List[Dict]:
         """
         Extrae path/content del JSON con comillas sin escapar en content.
@@ -188,7 +221,10 @@ class CodeGenerator:
         if not pm:
             return results
 
-        results.append({'path': pm.group(1), 'content': raw_content})
+        # Decodificar escape sequences: sin esto \n queda como 2 chars literales
+        # y splitlines() devuelve 1 línea → integrity check falla con 1% líneas
+        decoded = CodeGenerator._unescape_json_content(raw_content)
+        results.append({'path': pm.group(1), 'content': decoded})
         return results
 
     def _parse(self, text: str, paths: List[str] = None) -> List[FileChange]:
