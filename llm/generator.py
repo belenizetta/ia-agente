@@ -35,12 +35,30 @@ class CodeGenerator:
     # ------------------------------------------------------------------
 
     def _find_method_bounds(self, lines: List[str], method_name: str) -> Tuple[Optional[int], Optional[int]]:
-        """Encuentra el inicio y fin de un método por nombre usando conteo de llaves."""
+        """Encuentra el inicio y fin de un método por nombre usando conteo de llaves.
+        Soporta Java (keywords de visibilidad/tipo) y TypeScript/JS (métodos de clase indentados)."""
         start = None
         for i, line in enumerate(lines):
             if re.search(rf'\b{re.escape(method_name)}\s*\(', line):
-                if any(kw in line for kw in ['void ', 'public ', 'private ', 'protected ',
-                                              'List<', 'Optional<', 'ResponseEntity', 'String ', 'int ', 'boolean ']):
+                # Java: palabra clave de visibilidad o tipo de retorno
+                is_java = any(kw in line for kw in [
+                    'void ', 'public ', 'private ', 'protected ',
+                    'List<', 'Optional<', 'ResponseEntity', 'String ', 'int ', 'boolean '
+                ])
+                # TypeScript/JS: método de clase indentado, no es una llamada (this.method)
+                is_ts = (
+                    not f'this.{method_name}' in line
+                    and not f'super.{method_name}' in line
+                    and (
+                        '{' in line                                          # método con cuerpo en la misma línea
+                        or '=>' in line                                      # arrow function
+                        or bool(re.search(rf'^\s+{re.escape(method_name)}\s*\(', line))  # indentado
+                    )
+                    and any(kw in line for kw in ['async ', ': void', ': Promise', ': Observable',
+                                                   ': boolean', ': string', ': number', ': any',
+                                                   ') {', ') => {'])
+                )
+                if is_java or is_ts:
                     start = i
                     break
 
@@ -357,18 +375,23 @@ class CodeGenerator:
             focused, sec_start, sec_end = section_meta[path]
             original_full = original_files[path]
 
+            # Detectar lenguaje para el bloque de código en el prompt
+            _ext = os.path.splitext(path)[1].lower()
+            _lang = {".java": "java", ".ts": "typescript", ".js": "javascript",
+                     ".py": "python", ".go": "go", ".kt": "kotlin"}.get(_ext, "")
+
             section_system = (
                 "You are a precise code editor. "
                 "Return ONLY a JSON array with ONE element. "
                 "The 'content' field must contain ONLY the fixed method/section shown — "
                 "NOT the entire file. No duplicate methods. No extra code.\n"
-                'Format: [{"path": "path/to/File.java", "content": "fixed method here"}]'
+                f'Format: [{{"path": "{path}", "content": "fixed method here"}}]'
             )
 
             section_prompt = (
                 f"TASK: {prompt}\n\n"
                 f"Fix ONLY the following code section from {path}:\n"
-                f"```java\n{focused}\n```\n\n"
+                f"```{_lang}\n{focused}\n```\n\n"
                 f"Return a JSON array with the corrected section. "
                 f"Do NOT return the full file — only the fixed method/section."
             )
