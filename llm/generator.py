@@ -162,6 +162,44 @@ class CodeGenerator:
         return ''.join(result)
 
     @staticmethod
+    def _fix_backtick_strings(text: str) -> str:
+        """Convierte backtick template literals a strings JSON válidos con comillas dobles.
+        El modelo TypeScript-entrenado genera: "content": `code` en vez de "content": "code".
+        Escapa correctamente: " → \\", newline → \\n, tab → \\t, \\ → \\\\."""
+        result = []
+        i = 0
+        while i < len(text):
+            if text[i] == '`':
+                result.append('"')
+                j = i + 1
+                while j < len(text) and text[j] != '`':
+                    c = text[j]
+                    if c == '\\' and j + 1 < len(text):
+                        nxt = text[j + 1]
+                        if nxt in ('"', '\\', 'n', 'r', 't', '`', '/'):
+                            result.append('\\'); result.append(nxt)
+                            j += 2; continue
+                        else:
+                            result.append('\\\\')
+                    elif c == '"':
+                        result.append('\\"')
+                    elif c == '\n':
+                        result.append('\\n')
+                    elif c == '\r':
+                        result.append('\\r')
+                    elif c == '\t':
+                        result.append('\\t')
+                    else:
+                        result.append(c)
+                    j += 1
+                result.append('"')
+                i = j + 1  # saltar backtick de cierre
+            else:
+                result.append(text[i])
+                i += 1
+        return ''.join(result)
+
+    @staticmethod
     def _unescape_json_content(s: str) -> str:
         """Decodifica secuencias de escape JSON (\n, \t, \\, \", etc.) en el contenido
         extraído sin json.loads. Sin esto, los saltos de línea quedan como 2 chars
@@ -253,8 +291,13 @@ class CodeGenerator:
 
         if match:
             json_text = match.group(0)
-            # Intento 1 y 2: parseo JSON directo, luego con control-chars reparados
-            for attempt in (json_text, self._fix_json_control_chars(json_text)):
+            bt_fixed = self._fix_backtick_strings(json_text)
+
+            # Intentos 1-4: directo / control-chars / backtick-fixed / combinado
+            for attempt in (json_text,
+                            self._fix_json_control_chars(json_text),
+                            bt_fixed,
+                            self._fix_json_control_chars(bt_fixed)):
                 try:
                     parsed = json.loads(attempt)
                     for item in parsed:
@@ -268,17 +311,18 @@ class CodeGenerator:
                 except Exception as e:
                     logger.warning(f"JSON parse failed: {e}")
 
-            # Intento 3: extracción robusta con backward scan para comillas sin escapar
-            items = self._extract_from_broken_json(json_text)
-            if items:
-                logger.info(f"[PARSE] Backward-scan extrajo {len(items)} item(s)")
-                for item in items:
-                    changes.append(FileChange(
-                        path=item['path'].strip(),
-                        content=item['content'].strip(),
-                        mode='update',
-                    ))
-                return changes
+            # Intento 5: extracción robusta con backward scan (original y backtick-fixed)
+            for text_to_scan in (json_text, bt_fixed):
+                items = self._extract_from_broken_json(text_to_scan)
+                if items:
+                    logger.info(f"[PARSE] Backward-scan extrajo {len(items)} item(s)")
+                    for item in items:
+                        changes.append(FileChange(
+                            path=item['path'].strip(),
+                            content=item['content'].strip(),
+                            mode='update',
+                        ))
+                    return changes
 
         # Fallback final: extraer bloque de código si solo hay un archivo
         if paths and len(paths) == 1:
