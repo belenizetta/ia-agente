@@ -251,6 +251,7 @@ def get_preview(job_id: str):
         "job_id": job_id,
         "summary": state.get("plan", {}).get("summary", ""),
         "diffs": state.get("diffs_preview", []),
+        "analysis": state.get("analysis_results", []),
     }
 
 

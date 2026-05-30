@@ -372,6 +372,7 @@ class Orchestrator:
 
         generated_changes_map: Dict[str, list] = {}
         diffs_preview: list = []
+        analysis_results: list = []
 
         for task in plan.get("tasks", []):
             svc = task["service"]
@@ -380,6 +381,40 @@ class Orchestrator:
             steps = task.get("steps", [])
 
             if action == "analyze_code":
+                # Llamar al LLM para análisis sin generar cambios
+                analysis_repo = local_paths.get(svc)
+                if analysis_repo:
+                    matched = self._find_files_in_repo(
+                        analysis_repo, class_names_in_prompt, CODE_EXTENSIONS, prompt
+                    )
+                    for fp in (matched or [])[:2]:
+                        abs_path = os.path.join(analysis_repo, fp)
+                        try:
+                            with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
+                                file_content = f.read()
+                            if not file_content.strip():
+                                continue
+                            analysis_prompt = (
+                                f"Analizá el siguiente código y respondé:\n{prompt}\n\n"
+                                f"Archivo: {fp}\n```\n{file_content[:8000]}\n```\n\n"
+                                f"Respondé en español de forma clara, organizada y concisa."
+                            )
+                            analysis_text = self.generator.call_llm(
+                                analysis_prompt,
+                                system=(
+                                    "Sos un experto en análisis de código. "
+                                    "Explicá el código de forma clara y en español. "
+                                    "No generes JSON ni bloques de código — solo texto explicativo."
+                                )
+                            )
+                            analysis_results.append({
+                                "service": svc,
+                                "file": fp,
+                                "text": analysis_text,
+                            })
+                            logger.info(f"[ANALYSIS] {fp}: {len(analysis_text)} chars")
+                        except Exception as e:
+                            logger.warning(f"[ANALYSIS] Error leyendo {fp}: {e}")
                 continue
 
             repo_path = local_paths.get(svc)
@@ -486,6 +521,7 @@ class Orchestrator:
                 "project_info": project_info,
                 "generated_changes": generated_changes_map,
                 "diffs_preview": diffs_preview,
+                "analysis_results": analysis_results,
             }
             self._save_job_state(job_id, state)
 

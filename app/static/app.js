@@ -205,12 +205,43 @@ function renderPlan(preview) {
   const container = document.getElementById('diffsList');
   container.innerHTML = '';
 
+  // Mostrar análisis si el LLM respondió preguntas sin generar cambios
+  const analysis = preview.analysis || [];
+  if (analysis.length) {
+    analysis.forEach(a => container.appendChild(buildAnalysisCard(a)));
+  }
+
   const diffs = preview.diffs || [];
-  if (!diffs.length) {
+  if (!diffs.length && !analysis.length) {
     container.innerHTML = '<p style="color:var(--muted);font-size:13px">El LLM no generó cambios detectables. Intentá con un prompt más específico.</p>';
     return;
   }
   diffs.forEach((d, i) => container.appendChild(buildDiffCard(d, i)));
+}
+
+function buildAnalysisCard(a) {
+  const card = el('div', 'diff-card');
+  card.style.cssText = 'border-left: 3px solid var(--accent)';
+
+  const header = el('div', 'diff-card-header');
+  header.innerHTML = `
+    <span class="diff-tag">${esc(a.service)}</span>
+    <span class="diff-path" title="${esc(a.file)}">${esc(a.file)}</span>
+    <span style="color:var(--accent);font-size:12px;margin-left:auto">📋 Análisis</span>
+    <span class="diff-toggle">▾</span>`;
+
+  const body = el('div', 'diff-body');
+  body.style.cssText = 'padding:16px;white-space:pre-wrap;font-family:var(--mono);font-size:13px;line-height:1.6;color:var(--fg)';
+  body.textContent = a.text || '(sin respuesta)';
+
+  header.addEventListener('click', () => {
+    const collapsed = body.classList.toggle('collapsed');
+    header.querySelector('.diff-toggle').textContent = collapsed ? '▸' : '▾';
+  });
+
+  card.appendChild(header);
+  card.appendChild(body);
+  return card;
 }
 
 function buildDiffCard(diff, idx) {
