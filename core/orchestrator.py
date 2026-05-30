@@ -384,27 +384,51 @@ class Orchestrator:
                 # Llamar al LLM para análisis sin generar cambios
                 analysis_repo = local_paths.get(svc)
                 if analysis_repo:
+                    # 1) Match por ruta/clase explícita del prompt
                     matched = self._find_files_in_repo(
                         analysis_repo, class_names_in_prompt, CODE_EXTENSIONS, prompt
                     )
-                    for fp in (matched or [])[:2]:
+                    # 2) Fallback: archivos sugeridos por el planner
+                    if not matched:
+                        matched = [
+                            fp for fp in files_in_task
+                            if os.path.exists(os.path.join(analysis_repo, fp))
+                        ][:3]
+                    # 3) Fallback: entrypoints del proyecto (main.py, app.component.ts, etc.)
+                    if not matched:
+                        svc_info = project_info.get("services", {}).get(svc, {})
+                        matched = [
+                            fp for fp in svc_info.get("entrypoints", [])
+                            if os.path.exists(os.path.join(analysis_repo, fp))
+                        ][:2]
+                    logger.info(f"[ANALYSIS] {svc}: analizando {matched}")
+                    for fp in matched[:2]:
                         abs_path = os.path.join(analysis_repo, fp)
                         try:
                             with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
                                 file_content = f.read()
                             if not file_content.strip():
                                 continue
+                            svc_info = project_info.get("services", {}).get(svc, {})
+                            langs = svc_info.get("languages", [])
+                            frameworks = list(svc_info.get("frameworks", {}).keys())
+                            ctx_header = (
+                                f"Servicio: {svc} | Lenguajes: {', '.join(langs)} | "
+                                f"Frameworks: {', '.join(frameworks)}\n\n"
+                            ) if langs else ""
                             analysis_prompt = (
-                                f"Analizá el siguiente código y respondé:\n{prompt}\n\n"
+                                f"{ctx_header}"
                                 f"Archivo: {fp}\n```\n{file_content[:8000]}\n```\n\n"
+                                f"Tarea: {prompt}\n\n"
                                 f"Respondé en español de forma clara, organizada y concisa."
                             )
                             analysis_text = self.generator.call_llm(
                                 analysis_prompt,
                                 system=(
                                     "Sos un experto en análisis de código. "
-                                    "Explicá el código de forma clara y en español. "
-                                    "No generes JSON ni bloques de código — solo texto explicativo."
+                                    "Describí el propósito, flujo principal y aspectos destacables. "
+                                    "Si encontrás posibles bugs o mejoras, mencionálos. "
+                                    "Respondé solo en texto, sin JSON ni bloques de código."
                                 )
                             )
                             analysis_results.append({
